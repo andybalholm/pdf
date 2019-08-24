@@ -9,9 +9,10 @@ type Document struct {
 
 func (d *Document) NewPage(width, height float64) *Page {
 	p := &Page{
-		parent: &d.pages,
-		width:  width,
-		height: height,
+		parent:   &d.pages,
+		width:    width,
+		height:   height,
+		contents: new(stream),
 	}
 	d.pages.pages = append(d.pages.pages, p)
 	return p
@@ -43,12 +44,17 @@ func (p *pageTree) writeTo(e *encoder) {
 }
 
 type Page struct {
-	parent *pageTree
-	width  float64
-	height float64
+	parent   *pageTree
+	width    float64
+	height   float64
+	contents *stream
 }
 
 func (p *Page) writeTo(e *encoder) {
-	parentRef := e.getRef(p.parent)
-	fmt.Fprintf(e, "<< /Type /Page /Parent %d 0 R /Resources << >> /MediaBox [0 0 %f %f] >>", parentRef, p.width, p.height)
+	fmt.Fprint(e, "<< /Type /Page ")
+	fmt.Fprintf(e, "/Parent %d 0 R ", e.getRef(p.parent))
+	fmt.Fprintf(e, "/Contents %d 0 R ", e.getRef(p.contents))
+	fmt.Fprint(e, "/Resources << >> ")
+	fmt.Fprintf(e, "/MediaBox [0 0 %g %g] ", p.width, p.height)
+	fmt.Fprint(e, ">>")
 }
