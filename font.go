@@ -1,16 +1,15 @@
 package pdf
 
 import (
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"io/ioutil"
-	"sort"
 	"strings"
 
 	"golang.org/x/image/font"
 	"golang.org/x/image/font/sfnt"
 	"golang.org/x/image/math/fixed"
+	"golang.org/x/text/encoding/charmap"
 )
 
 type fontType int
@@ -20,12 +19,22 @@ const (
 	openType
 )
 
+func (t fontType) String() string {
+	switch t {
+	case trueType:
+		return "TrueType"
+	case openType:
+		return "OpenType"
+	default:
+		return "invalid"
+	}
+}
+
 type Font struct {
-	typ        fontType
-	name       string
-	data       []byte
-	sfnt       *sfnt.Font
-	usedGlyphs map[rune]sfnt.GlyphIndex
+	typ  fontType
+	name string
+	data []byte
+	sfnt *sfnt.Font
 }
 
 // LoadFont loads a TrueType or OpenType font from the file specified. If it
@@ -42,8 +51,7 @@ func (d *Document) LoadFont(filename string) (*Font, error) {
 	}
 
 	f := &Font{
-		data:       b,
-		usedGlyphs: make(map[rune]sfnt.GlyphIndex),
+		data: b,
 	}
 
 	if len(b) < 4 {
@@ -82,60 +90,28 @@ func (s sortedRunes) Less(i, j int) bool { return s[i] < s[j] }
 func (s sortedRunes) Swap(i, j int)      { s[i], s[j] = s[j], s[i] }
 
 func (f *Font) writeTo(e *encoder) {
-	var CIDType int
-	switch f.typ {
-	case trueType:
-		CIDType = 2
-	case openType:
-		CIDType = 0
-	}
-
 	var buffer sfnt.Buffer
-	numGlyphs := f.sfnt.NumGlyphs()
-	widths := make([]int, numGlyphs)
-	for i := range widths {
-		w, err := f.sfnt.GlyphAdvance(&buffer, sfnt.GlyphIndex(i), fixed.I(1000), font.HintingNone)
-		if err == nil {
-			widths[i] = w.Round()
+
+	firstChar, lastChar := 32, 255
+	widths := make([]int, lastChar-firstChar+1)
+	for i := firstChar; i <= lastChar; i++ {
+		r := charmap.Windows1252.DecodeByte(byte(i))
+		g, err := f.sfnt.GlyphIndex(&buffer, r)
+		if err != nil {
+			continue
 		}
+		w, err := f.sfnt.GlyphAdvance(&buffer, g, fixed.I(1000), font.HintingNone)
+		if err != nil {
+			continue
+		}
+		widths[i-firstChar] = w.Round()
 	}
 
-	runes := make(sortedRunes, 0, len(f.usedGlyphs))
-	for r := range f.usedGlyphs {
-		runes = append(runes, r)
-	}
-	sort.Sort(runes)
-
-	fmt.Fprintf(e, "<< /Type /Font /Subtype /Type0 /BaseFont /%s /Encoding /Identity-H\n", f.name)
-	fmt.Fprintf(e, "/DescendantFonts [ << /Type /Font /Subtype /CIDFontType%d /BaseFont /%s /CIDToGIDMap /Identity\n", CIDType, f.name)
-
-	fmt.Fprintf(e, "/DW %d ", widths[0])
-	fmt.Fprintf(e, "/W [0 %d]\n", widths)
-
-	fmt.Fprintln(e, "/CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >>")
+	fmt.Fprintf(e, "<< /Type /Font /Subtype /%v /BaseFont /%s /Encoding /WinAnsiEncoding\n", f.typ, f.name)
 	fmt.Fprintf(e, "/FontDescriptor %d 0 R\n", e.getRef(&fontDescriptor{f}))
-	fmt.Fprint(e, ">> ] >>")
-}
-
-func (f *Font) toGlyph(r rune) sfnt.GlyphIndex {
-	var buffer sfnt.Buffer
-	gi, ok := f.usedGlyphs[r]
-	if ok {
-		return gi
-	}
-	gi, err := f.sfnt.GlyphIndex(&buffer, r)
-	if err != nil {
-		return 0
-	}
-	return gi
-}
-
-func (f *Font) toGlyphs(s string) []sfnt.GlyphIndex {
-	glyphs := make([]sfnt.GlyphIndex, 0, len(s))
-	for _, r := range s {
-		glyphs = append(glyphs, f.toGlyph(r))
-	}
-	return glyphs
+	fmt.Fprintf(e, "/FirstChar %d /LastChar %d\n", firstChar, lastChar)
+	fmt.Fprintf(e, "/Widths %d\n", widths)
+	fmt.Fprint(e, ">>")
 }
 
 type fontDescriptor struct {
@@ -146,12 +122,7 @@ func (f *fontDescriptor) writeTo(e *encoder) {
 	fontFile := &stream{}
 	fontFile.enableFlate()
 	fontFile.Write(f.f.data)
-	switch f.f.typ {
-	case trueType:
-		fontFile.extraData = "/Subtype /TrueType"
-	case openType:
-		fontFile.extraData = "/Subtype /OpenType"
-	}
+	fontFile.extraData = fmt.Sprintf("/Subtype /%v", f.f.typ)
 
 	var buffer sfnt.Buffer
 
@@ -210,8 +181,9 @@ func (p *Page) EndText() {
 
 // Show puts s on the page.
 func (p *Page) Show(s string) {
-	glyphs := p.currentFont.toGlyphs(s)
-	b := new(strings.Builder)
-	binary.Write(b, binary.BigEndian, glyphs)
-	fmt.Fprintf(p.contents, "(%s) Tj ", stringEscaper.Replace(b.String()))
+	s, err := charmap.Windows1252.NewEncoder().String(s)
+	if err != nil {
+		return
+	}
+	fmt.Fprintf(p.contents, "(%s) Tj ", stringEscaper.Replace(s))
 }
