@@ -1,7 +1,6 @@
 package pdf
 
 import (
-	"errors"
 	"fmt"
 	"io/ioutil"
 	"log"
@@ -14,29 +13,11 @@ import (
 	"golang.org/x/text/encoding/charmap"
 )
 
-type fontType int
-
-const (
-	trueType fontType = iota
-	openType
-)
-
-func (t fontType) String() string {
-	switch t {
-	case trueType:
-		return "TrueType"
-	case openType:
-		return "OpenType"
-	default:
-		return "invalid"
-	}
-}
-
 type Font struct {
-	typ  fontType
-	name string
-	data []byte
 	sfnt *sfnt.Font
+
+	encode    map[rune]byte
+	toUnicode [256]rune
 }
 
 // LoadFont loads a TrueType or OpenType font from the file specified. If it
@@ -53,29 +34,12 @@ func (d *Document) LoadFont(filename string) (*Font, error) {
 	}
 
 	f := &Font{
-		data: b,
-	}
-
-	if len(b) < 4 {
-		return nil, errors.New("font file too small")
-	}
-	switch string(b[:4]) {
-	case "true", "\x00\x01\x00\x00":
-		f.typ = trueType
-	case "OTTO":
-		f.typ = openType
-	default:
-		return nil, errors.New("unrecognized font format")
+		encode: make(map[rune]byte),
 	}
 
 	f.sfnt, err = sfnt.Parse(b)
 	if err != nil {
 		return nil, err
-	}
-
-	f.name, err = f.sfnt.Name(nil, sfnt.NameIDPostScript)
-	if err != nil {
-		return nil, errors.New("missing PostScript font name")
 	}
 
 	if d.fontCache == nil {
@@ -85,20 +49,40 @@ func (d *Document) LoadFont(filename string) (*Font, error) {
 	return f, nil
 }
 
-type sortedRunes []rune
-
-func (s sortedRunes) Len() int           { return len(s) }
-func (s sortedRunes) Less(i, j int) bool { return s[i] < s[j] }
-func (s sortedRunes) Swap(i, j int)      { s[i], s[j] = s[j], s[i] }
-
 func (f *Font) writeTo(e *encoder) {
-	firstChar, lastChar := 32, 255
+	var firstChar, lastChar int
+	for i := 0; i < 256; i++ {
+		if f.toUnicode[i] != 0 {
+			firstChar = i
+			break
+		}
+	}
+	for i := 255; i >= firstChar; i-- {
+		if f.toUnicode[i] != 0 {
+			lastChar = i
+			break
+		}
+	}
 	widths := make([]int, lastChar-firstChar+1)
 	cp := &charProcs{procs: make(map[string]*type3Glyph)}
+	var differences []string
+	prevDifference := -1
 
 	for i := firstChar; i <= lastChar; i++ {
 		var buffer sfnt.Buffer
-		r := charmap.Windows1252.DecodeByte(byte(i))
+		r := f.toUnicode[i]
+		if r == 0 {
+			continue
+		}
+		name := glyphName(r)
+		if r != charmap.Windows1252.DecodeByte(byte(i)) {
+			if prevDifference != i-1 {
+				differences = append(differences, fmt.Sprint(i))
+			}
+			differences = append(differences, "/"+name)
+			prevDifference = i
+		}
+
 		g, err := f.sfnt.GlyphIndex(&buffer, r)
 		if err != nil {
 			continue
@@ -108,13 +92,6 @@ func (f *Font) writeTo(e *encoder) {
 			continue
 		}
 		widths[i-firstChar] = w.Round()
-		name, err := f.sfnt.GlyphName(&buffer, g)
-		if err != nil {
-			continue
-		}
-		if name == "" {
-			name = glyphName(r)
-		}
 		outlines, err := f.sfnt.LoadGlyph(&buffer, g, fixed.I(1000), nil)
 		if err != nil {
 			log.Println(err)
@@ -134,7 +111,12 @@ func (f *Font) writeTo(e *encoder) {
 		bounds = []int{rawBounds.Min.X.Floor(), -rawBounds.Max.Y.Ceil(), rawBounds.Max.X.Ceil(), -rawBounds.Min.Y.Floor()}
 	}
 
-	fmt.Fprintf(e, "<< /Type /Font /Subtype /Type3 /Encoding /WinAnsiEncoding\n")
+	fmt.Fprintf(e, "<< /Type /Font /Subtype /Type3\n")
+	if len(differences) == 0 {
+		fmt.Fprintln(e, "/Encoding /WinAnsiEncoding")
+	} else {
+		fmt.Fprintf(e, "/Encoding << /BaseEncoding /WinAnsiEncoding /Differences %v >>\n", differences)
+	}
 	fmt.Fprintf(e, "/FontBBox %d\n", bounds)
 	fmt.Fprintf(e, "/FontMatrix [0.001 0 0 0.001 0 0]\n")
 	fmt.Fprintf(e, "/FirstChar %d /LastChar %d\n", firstChar, lastChar)
@@ -178,7 +160,6 @@ func (g *type3Glyph) writeTo(e *encoder) {
 	min.Y, max.Y = -max.Y, -min.Y
 
 	s := new(stream)
-	s.enableFlate()
 	fmt.Fprintf(s, "%d 0 %d %d %d %d d1\n", g.width, min.X.Floor(), min.Y.Floor(), max.X.Ceil(), max.Y.Ceil())
 	var current fixed.Point26_6
 	for _, segment := range g.outline {
@@ -249,6 +230,52 @@ func (p *Page) SetFont(f *Font, size float64) {
 	p.currentSize = size
 }
 
+func (f *Font) encodeRune(r rune) (b byte, ok bool) {
+	if b, ok := f.encode[r]; ok {
+		return b, true
+	}
+	if b, ok := charmap.Windows1252.EncodeRune(r); ok && f.toUnicode[b] == 0 {
+		f.encode[r] = b
+		f.toUnicode[b] = r
+		return b, true
+	}
+
+	for i := 31; i > 0 && b == 0; i-- {
+		if f.toUnicode[i] == 0 {
+			b = byte(i)
+		}
+	}
+	for i := 127; i < 256 && b == 0; i++ {
+		if f.toUnicode[i] == 0 {
+			b = byte(i)
+		}
+	}
+	for i := 126; i > 32 && b == 1; i-- {
+		if f.toUnicode[i] == 0 {
+			b = byte(i)
+		}
+	}
+
+	if b != 0 {
+		f.encode[r] = b
+		f.toUnicode[b] = r
+		return b, true
+	}
+
+	return 0, false
+}
+
+func (f *Font) encodeString(s string) string {
+	b := make([]byte, 0, len(s))
+	for _, r := range s {
+		c, ok := f.encodeRune(r)
+		if ok {
+			b = append(b, c)
+		}
+	}
+	return string(b)
+}
+
 var stringEscaper = strings.NewReplacer("\n", `\n`, "\r", `\r`, "\t", `\t`, "(", `\(`, ")", `\)`, `\`, `\\`)
 
 // BeginText begins a text object. All text output and positioning must happen
@@ -263,9 +290,6 @@ func (p *Page) EndText() {
 
 // Show puts s on the page.
 func (p *Page) Show(s string) {
-	s, err := charmap.Windows1252.NewEncoder().String(s)
-	if err != nil {
-		return
-	}
+	s = p.currentFont.encodeString(s)
 	fmt.Fprintf(p.contents, "(%s) Tj ", stringEscaper.Replace(s))
 }
