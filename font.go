@@ -230,6 +230,11 @@ func (p *Page) SetFont(f *Font, size float64) {
 	p.currentSize = size
 }
 
+// SetLeading sets the line spacing to be used by Multiline.
+func (p *Page) SetLeading(leading float64) {
+	fmt.Fprintf(p.contents, "%g TL ", leading)
+}
+
 func (f *Font) encodeRune(r rune) (b byte, ok bool) {
 	if b, ok := f.encode[r]; ok {
 		return b, true
@@ -278,18 +283,40 @@ func (f *Font) encodeString(s string) string {
 
 var stringEscaper = strings.NewReplacer("\n", `\n`, "\r", `\r`, "\t", `\t`, "(", `\(`, ")", `\)`, `\`, `\\`)
 
-// BeginText begins a text object. All text output and positioning must happen
+// beginText begins a text object. All text output and positioning must happen
 // between calls to BeginText and EndText.
-func (p *Page) BeginText() {
+func (p *Page) beginText() {
 	fmt.Fprint(p.contents, "BT ")
 }
 
-func (p *Page) EndText() {
+func (p *Page) endText() {
 	fmt.Fprint(p.contents, "ET ")
 }
 
-// Show puts s on the page.
-func (p *Page) Show(s string) {
+// show puts s on the page.
+func (p *Page) show(s string) {
 	s = p.currentFont.encodeString(s)
 	fmt.Fprintf(p.contents, "(%s) Tj ", stringEscaper.Replace(s))
+}
+
+// Left puts s on the page, left-aligned at (x, y).
+func (p *Page) Left(x, y float64, s string) {
+	p.beginText()
+	fmt.Fprintf(p.contents, "%g %g Td ", x, y)
+	p.show(s)
+	p.endText()
+}
+
+// Multiline puts multiple lines of text on the page (splitting s at '\n'). It
+// uses the line spacing set with Leading.
+func (p *Page) Multiline(x, y float64, s string) {
+	p.beginText()
+	fmt.Fprintf(p.contents, "%g %g Td ", x, y)
+	for i, line := range strings.Split(s, "\n") {
+		if i > 0 {
+			fmt.Fprint(p.contents, "T* ")
+		}
+		p.show(line)
+	}
+	p.endText()
 }
