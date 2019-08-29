@@ -5,6 +5,7 @@ import (
 	"io/ioutil"
 	"log"
 	"sort"
+	"strconv"
 	"strings"
 
 	"golang.org/x/image/font"
@@ -281,6 +282,42 @@ func (f *Font) encodeString(s string) string {
 	return string(b)
 }
 
+// encodeAndKern converts s from UTF-8 to a format suitable for displaying with
+// the TJ operator, with kerning applied. It also returns the string's width,
+// in units of 1/1000 of an em.
+func (f *Font) encodeAndKern(s string) (tj []string, width int) {
+	s = f.encodeString(s)
+	var buffer sfnt.Buffer
+
+	var prevGlyph sfnt.GlyphIndex
+	chunkStart := 0
+	for i := 0; i < len(s); i++ {
+		g, err := f.sfnt.GlyphIndex(&buffer, f.toUnicode[s[i]])
+		if err != nil {
+			continue
+		}
+		advance, err := f.sfnt.GlyphAdvance(&buffer, g, fixed.I(1000), font.HintingNone)
+		if err == nil {
+			width += advance.Round()
+		}
+		if i != 0 {
+			kern, err := f.sfnt.Kern(&buffer, prevGlyph, g, fixed.I(1000), font.HintingNone)
+			if err == nil && kern != 0 {
+				width += kern.Round()
+				tj = append(tj,
+					"("+stringEscaper.Replace(s[chunkStart:i])+")",
+					strconv.Itoa(-kern.Round()),
+				)
+				chunkStart = i
+			}
+		}
+		prevGlyph = g
+	}
+	tj = append(tj, "("+stringEscaper.Replace(s[chunkStart:])+")")
+
+	return tj, width
+}
+
 var stringEscaper = strings.NewReplacer("\n", `\n`, "\r", `\r`, "\t", `\t`, "(", `\(`, ")", `\)`, `\`, `\\`)
 
 // beginText begins a text object. All text output and positioning must happen
@@ -295,8 +332,8 @@ func (p *Page) endText() {
 
 // show puts s on the page.
 func (p *Page) show(s string) {
-	s = p.currentFont.encodeString(s)
-	fmt.Fprintf(p.contents, "(%s) Tj ", stringEscaper.Replace(s))
+	tj, _ := p.currentFont.encodeAndKern(s)
+	fmt.Fprintf(p.contents, "%v TJ ", tj)
 }
 
 // Left puts s on the page, left-aligned at (x, y).
