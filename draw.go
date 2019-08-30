@@ -78,3 +78,8 @@ func (p *Page) FillCMYK(c, m, y, k float64) {
 func (p *Page) StrokeCMYK(c, m, y, k float64) {
 	fmt.Fprint(p.contents, c, m, y, k, " K ")
 }
+
+// Translate offsets the page's coordinate system by x and y.
+func (p *Page) Translate(x, y float64) {
+	fmt.Fprintf(p.contents, "1 0 0 1 %g %g cm ", x, y)
+}
