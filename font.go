@@ -344,6 +344,22 @@ func (p *Page) Left(x, y float64, s string) {
 	p.endText()
 }
 
+// Right puts s on the page, right-aligned at (x, y).
+func (p *Page) Right(x, y float64, s string) {
+	p.beginText()
+	tj, w := p.currentFont.encodeAndKern(s)
+	fmt.Fprintf(p.contents, "%g %g Td %v TJ ", x-float64(w)*0.001*p.currentSize, y, tj)
+	p.endText()
+}
+
+// Center puts s on the page, centered at (x, y).
+func (p *Page) Center(x, y float64, s string) {
+	p.beginText()
+	tj, w := p.currentFont.encodeAndKern(s)
+	fmt.Fprintf(p.contents, "%g %g Td %v TJ ", x-float64(w)*0.001*p.currentSize*0.5, y, tj)
+	p.endText()
+}
+
 // Multiline puts multiple lines of text on the page (splitting s at '\n'). It
 // uses the line spacing set with Leading.
 func (p *Page) Multiline(x, y float64, s string) {
