@@ -282,10 +282,24 @@ func (f *Font) encodeString(s string) string {
 	return string(b)
 }
 
+func (f *Font) runeWidth(r rune) int {
+	var buffer sfnt.Buffer
+	g, err := f.sfnt.GlyphIndex(&buffer, r)
+	if err != nil {
+		return 0
+	}
+	advance, err := f.sfnt.GlyphAdvance(&buffer, g, fixed.I(1000), font.HintingNone)
+	if err != nil {
+		return 0
+	}
+	return advance.Round()
+}
+
 // encodeAndKern converts s from UTF-8 to a format suitable for displaying with
 // the TJ operator, with kerning applied. It also returns the string's width,
-// in units of 1/1000 of an em.
-func (f *Font) encodeAndKern(s string) (tj []string, width int) {
+// in units of 1/1000 of an em. If maxWidth is nonzero and s is too long to fit,
+// the result will be truncated.
+func (f *Font) encodeAndKern(s string, maxWidth int) (tj []string, width int) {
 	s = f.encodeString(s)
 	var buffer sfnt.Buffer
 
@@ -298,14 +312,19 @@ func (f *Font) encodeAndKern(s string) (tj []string, width int) {
 		}
 		advance, err := f.sfnt.GlyphAdvance(&buffer, g, fixed.I(1000), font.HintingNone)
 		if err == nil {
+			oldWidth := width
 			width += advance.Round()
+			if maxWidth != 0 && width > maxWidth {
+				tj = append(tj, quoteString(s[chunkStart:i]))
+				return tj, oldWidth
+			}
 		}
 		if i != 0 {
 			kern, err := f.sfnt.Kern(&buffer, prevGlyph, g, fixed.I(1000), font.HintingNone)
 			if err == nil && kern != 0 {
 				width += kern.Round()
 				tj = append(tj,
-					"("+stringEscaper.Replace(s[chunkStart:i])+")",
+					quoteString(s[chunkStart:i]),
 					strconv.Itoa(-kern.Round()),
 				)
 				chunkStart = i
@@ -313,12 +332,16 @@ func (f *Font) encodeAndKern(s string) (tj []string, width int) {
 		}
 		prevGlyph = g
 	}
-	tj = append(tj, "("+stringEscaper.Replace(s[chunkStart:])+")")
+	tj = append(tj, quoteString(s[chunkStart:]))
 
 	return tj, width
 }
 
 var stringEscaper = strings.NewReplacer("\n", `\n`, "\r", `\r`, "\t", `\t`, "(", `\(`, ")", `\)`, `\`, `\\`)
+
+func quoteString(s string) string {
+	return "(" + stringEscaper.Replace(s) + ")"
+}
 
 // beginText begins a text object. All text output and positioning must happen
 // between calls to BeginText and EndText.
@@ -332,7 +355,7 @@ func (p *Page) endText() {
 
 // show puts s on the page.
 func (p *Page) show(s string) {
-	tj, _ := p.currentFont.encodeAndKern(s)
+	tj, _ := p.currentFont.encodeAndKern(s, 0)
 	fmt.Fprintf(p.contents, "%v TJ ", tj)
 }
 
@@ -347,7 +370,7 @@ func (p *Page) Left(x, y float64, s string) {
 // Right puts s on the page, right-aligned at (x, y).
 func (p *Page) Right(x, y float64, s string) {
 	p.beginText()
-	tj, w := p.currentFont.encodeAndKern(s)
+	tj, w := p.currentFont.encodeAndKern(s, 0)
 	fmt.Fprintf(p.contents, "%g %g Td %v TJ ", x-float64(w)*0.001*p.currentSize, y, tj)
 	p.endText()
 }
@@ -355,7 +378,7 @@ func (p *Page) Right(x, y float64, s string) {
 // Center puts s on the page, centered at (x, y).
 func (p *Page) Center(x, y float64, s string) {
 	p.beginText()
-	tj, w := p.currentFont.encodeAndKern(s)
+	tj, w := p.currentFont.encodeAndKern(s, 0)
 	fmt.Fprintf(p.contents, "%g %g Td %v TJ ", x-float64(w)*0.001*p.currentSize*0.5, y, tj)
 	p.endText()
 }
@@ -371,5 +394,24 @@ func (p *Page) Multiline(x, y float64, s string) {
 		}
 		p.show(line)
 	}
+	p.endText()
+}
+
+// Truncate displays s at (x, y), truncating it with an ellipsis if it is
+// longer than width.
+func (p *Page) Truncate(x, y, width float64, s string) {
+	scaledWidth := int(width / p.currentSize * 1000)
+	p.beginText()
+	fmt.Fprintf(p.contents, "%g %g Td ", x, y)
+	if full, w := p.currentFont.encodeAndKern(s, 0); w <= scaledWidth {
+		fmt.Fprintf(p.contents, "%v TJ ", full)
+		return
+	}
+	tj, _ := p.currentFont.encodeAndKern(s, scaledWidth-p.currentFont.runeWidth('…'))
+	ellipsis, ok := p.currentFont.encodeRune('…')
+	if ok {
+		tj = append(tj, quoteString(string([]byte{ellipsis})))
+	}
+	fmt.Fprintf(p.contents, "%v TJ ", tj)
 	p.endText()
 }
