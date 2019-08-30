@@ -415,3 +415,31 @@ func (p *Page) Truncate(x, y, width float64, s string) {
 	fmt.Fprintf(p.contents, "%v TJ ", tj)
 	p.endText()
 }
+
+// WordWrap displays s on multiple lines, wrapping at word boundaries to keep
+// the width less than margin.
+func (p *Page) WordWrap(x, y, margin float64, s string) {
+	scaledMargin := int(margin / p.currentSize * 1000)
+	p.beginText()
+	fmt.Fprintf(p.contents, "%g %g Td ", x, y)
+	words := strings.Fields(s)
+	i := 0
+	for i < len(words) {
+		line, lineWidth := p.currentFont.encodeAndKern(words[i], 0)
+		i++
+		for i < len(words) {
+			word, wordWidth := p.currentFont.encodeAndKern(" "+words[i], 0)
+			if lineWidth+wordWidth > scaledMargin {
+				break
+			}
+			line = append(line, word...)
+			lineWidth += wordWidth
+			i++
+		}
+		fmt.Fprintf(p.contents, "%v TJ ", line)
+		if i < len(words) {
+			fmt.Fprint(p.contents, "T* ")
+		}
+	}
+	p.endText()
+}
