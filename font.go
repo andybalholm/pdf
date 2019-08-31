@@ -405,6 +405,7 @@ func (p *Page) Truncate(x, y, width float64, s string) {
 	fmt.Fprintf(p.contents, "%g %g Td ", x, y)
 	if full, w := p.currentFont.encodeAndKern(s, 0); w <= scaledWidth {
 		fmt.Fprintf(p.contents, "%v TJ ", full)
+		p.endText()
 		return
 	}
 	tj, _ := p.currentFont.encodeAndKern(s, scaledWidth-p.currentFont.runeWidth('…'))
