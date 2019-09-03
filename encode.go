@@ -35,7 +35,7 @@ func (e *encoder) encode(root object) []byte {
 	e.offsets = nil
 	e.refs = make(map[object]int)
 
-	e.WriteString("%%PDF-1.7\n")
+	e.WriteString("%%PDF-1.7\n%öäüß\n")
 	rootRef := e.getRef(root)
 
 	for i := 0; i < len(e.objects); i++ {
@@ -48,9 +48,9 @@ func (e *encoder) encode(root object) []byte {
 	startxref := e.Len()
 	e.WriteString("xref\n")
 	fmt.Fprintf(e, "0 %d\n", len(e.objects)+1)
-	e.WriteString("0000000000 65535 f\n")
+	e.WriteString("0000000000 65535 f \n")
 	for _, offset := range e.offsets {
-		fmt.Fprintf(e, "%010d 00000 n\n", offset)
+		fmt.Fprintf(e, "%010d 00000 n \n", offset)
 	}
 
 	e.WriteString("trailer\n")
